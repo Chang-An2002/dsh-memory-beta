@@ -1,0 +1,49 @@
+{
+  "name": "dsh-memory",
+  "version": "0.1.0",
+  "description": "分层记忆与混合召回知识库插件：把「记得住人、能召回可靠信息」的记忆系统接进 DeepSeek Harness，附带来源标注、置信度兜底与画像管理",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "memory",
+    "rag",
+    "hybrid-retrieval",
+    "bm25",
+    "rrf",
+    "knowledge-base"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chang-An2002/dsh-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Chang-An2002/dsh-memory/issues"
+  },
+  "homepage": "https://github.com/Chang-An2002/dsh-memory#readme",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "test:in-process": "node --experimental-test-isolation=none --test test/"
+  },
+  "license": "MIT"
+}

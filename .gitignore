@@ -1,0 +1,24 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+out/
+coverage/
+*.tgz
+
+# 临时与调试产物
+.demo/
+.probe/
+.scratch/
+*.tmp
+*.log
+
+# 编辑器和系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本机环境
+.env
+.env.local

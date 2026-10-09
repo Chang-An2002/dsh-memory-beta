@@ -1,0 +1,9 @@
+# 统一换行符为 LF：这个仓库要在 Windows / Linux / macOS 上被使用，
+# 不锁死的话 Git 的 autocrlf 会让不同平台看到整文件级别的无意义 diff。
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary

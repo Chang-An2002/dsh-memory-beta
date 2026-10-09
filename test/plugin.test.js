@@ -101,12 +101,62 @@ test('createTools：声明 5 个工具且参数 schema 合法', () => {
     assert.ok(t.parameters && typeof t.parameters === 'object');
     for (const [key, spec] of Object.entries(t.parameters)) {
       assert.ok(typeof spec.type === 'string', `${t.name}.${key} 缺 type`);
+      // DSH 的编译器要求：`required` 出现时必须是 `true`
+      if ('required' in spec) {
+        assert.equal(spec.required, true, `${t.name}.${key} 的 required 只能是 true`);
+      }
     }
   }
   // 必填参数必须显式标注
   assert.equal(tool(tools, 'kb_search').parameters.query.required, true);
   assert.equal(tool(tools, 'memory').parameters.action.required, true);
   assert.deepEqual(tool(tools, 'memory').parameters.action.enum, ['read', 'write', 'forget']);
+});
+
+test('createTools：每个工具的 output 必须提供 schema 与 render（DSH 硬契约）', () => {
+  // DSH 的 defineTool 里 `const userRender = options.output.render` **没有可选链**，
+  // 并把它接成 `render(args, value) { return userRender(args, value) }`。
+  // 缺 render 不会在加载时报错，但模型每次调用工具都会抛 "userRender is not a function"，
+  // 等于五个工具全废——而只检查 schema 形状的测试抓不到它。
+  const tools = createTools({ workspace: os.tmpdir(), dshHome: dshHome() });
+  for (const t of tools) {
+    assert.ok(t.output && typeof t.output === 'object', `${t.name} 缺 output`);
+    assert.ok(t.output.schema && typeof t.output.schema === 'object', `${t.name} 缺 output.schema`);
+    assert.equal(typeof t.output.render, 'function', `${t.name} 缺 output.render`);
+  }
+});
+
+test('createTools：output.render 返回 DSH 的内容块数组', () => {
+  const tools = createTools({ workspace: os.tmpdir(), dshHome: dshHome() });
+  for (const t of tools) {
+    const blocks = t.output.render({}, '示例输出');
+    assert.ok(Array.isArray(blocks), `${t.name}.render 必须返回数组`);
+    assert.ok(blocks.length > 0);
+    for (const block of blocks) {
+      assert.equal(block.type, 'text');
+      assert.equal(typeof block.text, 'string');
+    }
+    assert.equal(blocks[0].text, '示例输出');
+  }
+});
+
+test('createTools：output.render 能把非字符串值安全地转成文本', () => {
+  const tools = createTools({ workspace: os.tmpdir(), dshHome: dshHome() });
+  const render = tools[0].output.render;
+  assert.equal(render({}, undefined)[0].text, 'undefined');
+  assert.equal(render({}, { a: 1 })[0].text, '[object Object]');
+});
+
+test('工具定义里不得出现 DSH 编译器不接受的形状', () => {
+  const tools = createTools({ workspace: os.tmpdir(), dshHome: dshHome() });
+  for (const t of tools) {
+    // 参数不能是原始 JSON Schema 的 `properties` 包装，必须是 { 名: spec } 字典
+    assert.equal(t.parameters.type, undefined, `${t.name}.parameters 不应自带 type`);
+    assert.equal(t.parameters.properties, undefined, `${t.name}.parameters 不应是 JSON Schema`);
+    // 输出 schema 是值 schema：不允许 required
+    assert.equal(t.output.schema.required, undefined, `${t.name}.output.schema 不应含 required`);
+    assert.equal(typeof t.output.schema.type, 'string', `${t.name}.output.schema 缺 type`);
+  }
 });
 
 test('prepareTools：提供了 defineTool 时逐个包装，未提供时原样返回', () => {

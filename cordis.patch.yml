@@ -1,15 +1,15 @@
 # ============================================================================
-# dsh-memory — DSH bundle patch
+# dsh-memory-beta — DSH bundle patch
 # ============================================================================
 # 这是插件的「挂载声明」。DSH 启动时按 bundle 层叠加各插件的 patch，
 # 本文件把记忆插件插入当前 profile 的配置树。
 #
 # 安装方式（桌面端由客户端自带的 plugin_manager 完成，会自动写 profile）：
-#   Web：   dsh plugin --profile web add github:<你的用户名>/dsh-memory
+#   Web：   dsh plugin --profile web add github:Chang-An2002/dsh-memory-beta
 #   本地开发：dsh plugin --profile web add link:D:\Desktop\mihoyo\dsh_memory\dsh-memory
-#   桌面端：在会话里直接说「把 dsh-memory 装上」
+#   桌面端：在会话里直接说「把 dsh-memory-beta 装上」
 # ============================================================================
 
 - insert:
-    - id: dsh-memory
-      name: dsh-memory
+    - id: dsh-memory-beta
+      name: dsh-memory-beta

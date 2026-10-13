@@ -6,17 +6,21 @@ import path from 'node:path';
 
 import {
   name,
+  inject,
   Config,
   resolveConfig,
   resolveWorkspace,
   createTools,
   renderMemoryPrompt,
-  prepareTools,
+  toRegistrableTools,
+  compileParameterSchema,
+  summarizeStale,
+  listStale,
   apply,
   MEMORY_VARIABLE,
   MEMORY_SECTION,
 } from '../lib/index.js';
-import { projectMemoryFile } from '../lib/paths.js';
+import { projectMemoryFile, workspaceIndexFile } from '../lib/paths.js';
 
 /** 建一个隔离的临时工作区。 */
 function workspace(files) {
@@ -58,21 +62,62 @@ function tool(tools, toolName) {
 /* --------------------------------------------------------------- 元信息 */
 
 test('插件导出符合 DSH 插件契约的 name/inject/Config/apply', () => {
-  assert.equal(name, 'dsh-memory');
-  assert.ok(Array.isArray(Config === undefined ? [] : []));
+  assert.equal(name, 'dsh-memory-beta');
   assert.equal(typeof apply, 'function');
+  assert.ok(Array.isArray(inject));
+});
+
+test('Config 必须是标准 schema：Cordis 会调用 Config["~standard"].validate', () => {
+  // 这一条是真机踩坑的回归测试。原先 Config 是普通默认值对象，
+  // Cordis 的 resolveConfig 直接读 Config["~standard"].validate，
+  // 抛 TypeError → 整条插件 fiber 卸载 → 工具与提示词段落全部消失，
+  // 而宿主只在 stderr 打一行 "entry did not activate"。
+  const standard = Config['~standard'];
+  assert.ok(standard, 'Config 必须带 ~standard（普通默认值对象会让插件无法激活）');
+  assert.equal(typeof standard.validate, 'function');
+
+  const ok = standard.validate({});
+  assert.equal(ok.issues, undefined, '空配置必须通过校验');
+  assert.equal(ok.value.maxPassages, 6);
+  assert.equal(ok.value.injectMemory, true);
+  assert.equal(ok.value.maxInjectedEntries, 40);
+  assert.equal(ok.value.maxInjectedChars, 3000);
+
+  const custom = standard.validate({ maxPassages: 3, injectMemory: false });
+  assert.equal(custom.value.maxPassages, 3);
+  assert.equal(custom.value.injectMemory, false);
+
+  const bad = standard.validate({ maxPassages: 'x' });
+  assert.ok(Array.isArray(bad.issues) && bad.issues.length === 1, '类型错误必须报 issue');
+  assert.deepEqual(bad.issues[0].path, ['maxPassages']);
+
+  const notObject = standard.validate('nope');
+  assert.ok(Array.isArray(notObject.issues));
+
+  // patch 里只写 id/name 时，Cordis 传进来的是 undefined：必须当成「全默认」而不是报错
+  const omitted = standard.validate(undefined);
+  assert.equal(omitted.issues, undefined, 'undefined 是合法输入（patch 未写 config）');
+  assert.equal(omitted.value.maxPassages, 6);
+  assert.equal(omitted.value.injectMemory, true);
 });
 
 test('resolveConfig：补齐默认值并允许覆盖', () => {
   const defaults = resolveConfig();
-  assert.equal(defaults.maxPassages, Config.maxPassages);
+  assert.equal(defaults.maxPassages, 6);
   assert.equal(defaults.injectMemory, true);
+  assert.equal(defaults.maxInjectedEntries, 40);
+  assert.equal(defaults.maxInjectedChars, 3000);
 
   const custom = resolveConfig({ maxPassages: 3, injectMemory: false, maxInjectedChars: 100 });
   assert.equal(custom.maxPassages, 3);
   assert.equal(custom.injectMemory, false);
   assert.equal(custom.maxInjectedChars, 100);
-  assert.equal(custom.maxInjectedEntries, Config.maxInjectedEntries, '未覆盖项应保留默认');
+  assert.equal(custom.maxInjectedEntries, 40, '未覆盖项应保留默认');
+
+  // 非法值回退到默认值，而不是抛错
+  const bogus = resolveConfig({ maxPassages: 'x', maxInjectedEntries: null });
+  assert.equal(bogus.maxPassages, 6);
+  assert.equal(bogus.maxInjectedEntries, 40);
 });
 
 test('resolveWorkspace：优先用会话摘要的 cwd，否则退回兜底', () => {
@@ -159,13 +204,56 @@ test('工具定义里不得出现 DSH 编译器不接受的形状', () => {
   }
 });
 
-test('prepareTools：提供了 defineTool 时逐个包装，未提供时原样返回', () => {
+test('toRegistrableTools：把隐式参数表编译成根为 object 的 JSON Schema', () => {
+  // 真机踩坑 #2：DSH 的 defineTool 会把 { 名: {type, required?} } 编译成
+  // { type:'object', properties, required }，然后 tools.register() 原样交给模型。
+  // 本插件不 import defineTool，所以必须自己编译，否则模型收到的是
+  // {query: {type:'string'}} 这种没有 object 根的怪 schema。
   const raw = createTools({ workspace: os.tmpdir(), dshHome: dshHome() });
-  assert.equal(prepareTools(raw)[0], raw[0], '没有 defineTool 时应原样返回');
+  const registrable = toRegistrableTools(raw);
 
-  const wrapped = prepareTools(raw, (def) => ({ ...def, wrapped: true }));
-  assert.equal(wrapped.length, raw.length);
-  assert.ok(wrapped.every((t) => t.wrapped === true));
+  assert.equal(registrable.length, raw.length);
+  for (const t of registrable) {
+    assert.equal(t.parameters.type, 'object', `${t.name}.parameters 必须有 object 根`);
+    assert.equal(typeof t.parameters.properties, 'object');
+    for (const [key, spec] of Object.entries(t.parameters.properties)) {
+      assert.equal(spec.required, undefined, `${t.name}.${key} 里不能残留 required（它属于根）`);
+      assert.equal(typeof spec.type, 'string', `${t.name}.${key} 缺 type`);
+    }
+    // render 必须在
+    assert.equal(typeof t.output.render, 'function', `${t.name} 缺 output.render`);
+  }
+
+  const search = registrable.find((t) => t.name === 'kb_search');
+  assert.deepEqual(search.parameters.required, ['query'], 'query 是必填，应提升到根 required');
+  assert.equal(search.parameters.properties.query.description.length > 0, true);
+
+  const memory = registrable.find((t) => t.name === 'memory');
+  assert.deepEqual(memory.parameters.required, ['action']);
+  assert.deepEqual(memory.parameters.properties.action.enum, ['read', 'write', 'forget']);
+
+  // 没有必填项的工具不应出现 required 键（空数组也是噪声）
+  const index = registrable.find((t) => t.name === 'kb_index');
+  assert.equal(index.parameters.required, undefined);
+  assert.deepEqual(index.parameters.properties, {});
+});
+
+test('compileParameterSchema：属性上的 required 提升到根，其余键原样保留', () => {
+  const schema = compileParameterSchema({
+    a: { type: 'string', required: true, description: '甲' },
+    b: { type: 'number', enum: [1, 2] },
+  });
+  assert.deepEqual(schema, {
+    type: 'object',
+    properties: {
+      a: { type: 'string', description: '甲' },
+      b: { type: 'number', enum: [1, 2] },
+    },
+    required: ['a'],
+  });
+
+  assert.deepEqual(compileParameterSchema({}), { type: 'object', properties: {} });
+  assert.deepEqual(compileParameterSchema(undefined), { type: 'object', properties: {} });
 });
 
 /* --------------------------------------------------------- 端到端：索引 */
@@ -198,12 +286,69 @@ test('kb_index：重复执行是增量的，不重复计入新增', async () => 
   assert.match(second, /未变 2/);
 });
 
-test('kb_search：未建索引时明确提示先建索引', async () => {
+test('kb_search：未建索引时自动建立后再回答（而不是要求用户先跑 kb_index）', async () => {
   const root = workspace(SAMPLE);
   const tools = createTools({ workspace: root, dshHome: dshHome() });
+  const out = await tool(tools, 'kb_search').execute({ query: '存储选型' });
+
+  assert.match(out, /已自动重新索引后再回答/, '必须说明它替用户重建了索引');
+  assert.match(out, /新增 \d+ 个/, '必须说清变动了什么');
+  assert.doesNotMatch(out, /先调用 kb_index/, '不该再要求用户手动建索引');
+});
+
+test('kb_search：工作区里确实没有可索引内容时，仍然明确提示', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-empty-ws-'));
+  const tools = createTools({ workspace: root, dshHome: dshHome() });
   const out = await tool(tools, 'kb_search').execute({ query: '任意问题' });
-  assert.match(out, /索引是空的/);
+  assert.match(out, /没有可索引的内容/);
   assert.match(out, /kb_index/);
+});
+
+test('kb_search：索引过期时自动重建，并如实告知改动了什么', async () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+
+  await tool(tools, 'kb_index').execute({});
+
+  // 改了文档却没重新索引——这正是 §9 那条「静默答错」的场景
+  fs.writeFileSync(
+    path.join(root, 'docs/deploy.md'),
+    '# 部署\n\n## 安装\n\n安装方式已经改成完全不同的内容：从 GitHub 直接装。\n',
+    'utf8',
+  );
+
+  const out = await tool(tools, 'kb_search').execute({ query: '插件怎么安装' });
+  assert.match(out, /工作区自上次索引后有变化/);
+  assert.match(out, /已自动重新索引/);
+  assert.match(out, /docs\/deploy\.md/, '应点名是哪个文件变了');
+  assert.match(out, /GitHub 直接装/, '答案必须来自变更后的内容，而不是旧索引');
+});
+
+test('kb_search：只动了 mtime、内容没变时保持安静（不打扰用户）', async () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  await tool(tools, 'kb_index').execute({});
+
+  const old = new Date('2020-01-01T00:00:00Z');
+  for (const rel of Object.keys(SAMPLE)) fs.utimesSync(path.join(root, rel), old, old);
+
+  const out = await tool(tools, 'kb_search').execute({ query: '存储选型' });
+  assert.doesNotMatch(out, /自上次索引后有变化/, 'git checkout / 格式化保存这类操作不该触发重建');
+  assert.doesNotMatch(out, /已自动重新索引/);
+});
+
+test('kb_search：autoReindex=false 时只提醒、不擅自重建', async () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home, config: { autoReindex: false } });
+  await tool(tools, 'kb_index').execute({});
+
+  fs.appendFileSync(path.join(root, 'docs/architecture.md'), '\n新增一句关于缓存的说明。\n', 'utf8');
+
+  const out = await tool(tools, 'kb_search').execute({ query: '存储选型' });
+  assert.doesNotMatch(out, /已自动重新索引/, '关掉之后不许动索引');
 });
 
 test('kb_search：无命中时给出"没找到"，而不是空白或幻觉素材', async () => {
@@ -215,6 +360,23 @@ test('kb_search：无命中时给出"没找到"，而不是空白或幻觉素材
   const out = await tool(tools, 'kb_search').execute({ query: '量子纠缠贝尔不等式' });
   assert.match(out, /没有找到与查询相关的内容/);
   assert.match(out, /不要用你自己的训练知识/);
+});
+
+test('summarizeStale / listStale：把变化压成可读的一句', () => {
+  assert.equal(summarizeStale([]), '');
+  assert.equal(listStale([]), '');
+  assert.equal(
+    summarizeStale([
+      { docId: 'a', kind: 'added' },
+      { docId: 'b', kind: 'modified' },
+      { docId: 'c', kind: 'removed' },
+    ]),
+    '新增 1 个，改动 1 个，删除 1 个',
+  );
+  assert.equal(listStale([{ docId: 'a.md', kind: 'added' }]), 'a.md');
+  // 超过 8 个时截断，但要报出总数
+  const many = Array.from({ length: 12 }, (_v, i) => ({ docId: `f${i}.md`, kind: 'modified' }));
+  assert.match(listStale(many), /等 12 个文件/);
 });
 
 test('kb_search：空查询报错，不静默返回全部内容', async () => {
@@ -245,6 +407,47 @@ test('kb_stats：未建索引与已建索引两种状态都有明确输出', asy
   assert.match(stats, /已索引：2 个文件/);
   assert.match(stats, /docs\/architecture\.md/);
   assert.match(stats, /文件清单/);
+});
+
+test('kb_stats：索引过期时如实报告，但**不**擅自重建（只读工具）', async () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  await tool(tools, 'kb_index').execute({});
+
+  const indexFile = workspaceIndexFile(root, { dshHome: home });
+  const before = fs.readFileSync(indexFile, 'utf8');
+
+  fs.appendFileSync(path.join(root, 'docs/deploy.md'), '\n新增一段关于回滚的说明。\n', 'utf8');
+
+  const stats = await tool(tools, 'kb_stats').execute({});
+  assert.match(stats, /工作区自上次索引后有变化/, '必须报告过期');
+  assert.match(stats, /docs\/deploy\.md/, '必须点名哪个文件变了');
+  assert.match(stats, /旧数据/, '必须说明报的是旧数据');
+  assert.doesNotMatch(stats, /已自动重新索引/, 'kb_stats 不该重建索引');
+
+  // 索引文件必须原封不动——用户是拿 kb_stats 来"核对依据"的
+  assert.equal(fs.readFileSync(indexFile, 'utf8'), before, 'kb_stats 不得改写索引文件');
+});
+
+test('kb_search 与 kb_stats 对「索引是否过期」给出一致结论', async () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  await tool(tools, 'kb_index').execute({});
+
+  // 一致（都不过期）
+  assert.doesNotMatch(await tool(tools, 'kb_stats').execute({}), /自上次索引后有变化/);
+  assert.doesNotMatch(await tool(tools, 'kb_search').execute({ query: '存储选型' }), /自上次索引后有变化/);
+
+  fs.writeFileSync(path.join(root, 'docs/architecture.md'), '# 架构\n\n全部重写。\n', 'utf8');
+
+  // 一致（都过期）——注意 kb_stats 先跑、且它不重建，所以这里检测的是同一个"过期"事实
+  assert.match(await tool(tools, 'kb_stats').execute({}), /自上次索引后有变化/);
+  assert.match(await tool(tools, 'kb_search').execute({ query: '存储选型' }), /自上次索引后有变化/);
+
+  // kb_search 重建之后，两边都应恢复"不过期"
+  assert.doesNotMatch(await tool(tools, 'kb_stats').execute({}), /自上次索引后有变化/);
 });
 
 /* --------------------------------------------------------- 端到端：记忆 */
@@ -388,20 +591,20 @@ test('变量名必须符合 DSH 的命名契约（只允许小写、数字、下
   assert.doesNotMatch(MEMORY_VARIABLE, /[A-Z]/, '不得含大写字母');
 });
 
-test('apply：注册 5 个工具，并以占位段落 + 变量注入记忆', async () => {
-  const root = workspace(SAMPLE);
+test('apply：注册 5 个工具，并以占位段落 + 变量注入记忆', () => {
   const home = dshHome();
 
   const registered = [];
   const variables = new Map();
   const sections = [];
+  // 注意：**故意不给 ctx.agent**。真机里插件挂载在根上下文，根上下文没有 agent，
+  // 而且 Cordis 的上下文代理会因未 inject 而直接抛 cannot get property "agent"。
   const ctx = {
-    agent: { session: { summary: { cwd: root } } },
     tools: { register: (t) => registered.push(t) },
     systemPrompt: {
       variable: (n, r) => variables.set(n, r),
       section: (s) => sections.push(s),
-      getSectionOrder: (key) => (key === 'LONG_TERM_MEMORY' ? 7 : undefined),
+      getSectionOrder: () => undefined,
     },
   };
 
@@ -416,9 +619,23 @@ test('apply：注册 5 个工具，并以占位段落 + 变量注入记忆', asy
   assert.equal(sections.length, 1);
   assert.equal(sections[0].name, 'long-term-memory');
   assert.equal(sections[0].text, `{{${MEMORY_VARIABLE}}}`);
-  assert.equal(sections[0].order, 7);
+  // 官方没有给这个段落排位置时，必须落在一个合法的有限数上（undefined 会被 systemPrompt.section 拒绝）
+  assert.equal(sections[0].order, 2500);
   assert.ok(variables.has(MEMORY_VARIABLE));
-  void home;
+});
+
+test('apply：官方给了段落 order 时用官方值', () => {
+  const sections = [];
+  const ctx = {
+    tools: { register: () => {} },
+    systemPrompt: {
+      variable: () => {},
+      section: (s) => sections.push(s),
+      getSectionOrder: (key) => (key === 'LONG_TERM_MEMORY' ? 7 : undefined),
+    },
+  };
+  apply(ctx, { dshHome: dshHome() });
+  assert.equal(sections[0].order, 7);
 });
 
 test('apply：宿主没有提示词服务时，工具照常注册（失败隔离）', () => {
@@ -446,11 +663,12 @@ test('apply：systemPrompt 只有 section 没有 variable 时也不注入、不�
 test('apply：宿主提供变量服务时，注入改为每次组装现读（新记忆立刻生效）', async () => {
   const root = workspace(SAMPLE);
   const home = dshHome();
+  // 真机里组装上下文长这样：{ agent, scope: agent }，变量 provider 收到它再取 cwd
+  const assembly = { agent: { session: { header: { cwd: root } } } };
 
   const variables = new Map();
   const sections = [];
   const ctx = {
-    agent: { session: { summary: { cwd: root } } },
     tools: { register: () => {} },
     systemPrompt: {
       variable: (varName, resolver) => variables.set(varName, resolver),
@@ -467,21 +685,43 @@ test('apply：宿主提供变量服务时，注入改为每次组装现读（新
   assert.equal(variables.size, 1);
 
   const resolve = variables.get(MEMORY_VARIABLE);
-  assert.equal(resolve(), '', '没有记忆时解析为空串（空段落会被组装丢弃）');
+  assert.equal(resolve(assembly), '', '没有记忆时解析为空串（空段落会被组装丢弃）');
 
   // 写入记忆后，同一个 resolver 立刻能看到——这正是动态注入的意义
   const tools = createTools({ workspace: root, dshHome: home });
   await tool(tools, 'memory').execute({ action: 'write', key: '称呼', text: '叫长安' });
-  assert.match(resolve(), /叫长安/, '新写入的记忆必须在下次组装时可见');
+  assert.match(resolve(assembly), /叫长安/, '新写入的记忆必须在下次组装时可见');
+});
+
+test('apply：工作区取自组装上下文的 agent，而不是插件加载时的 cwd', async () => {
+  const rootA = workspace(SAMPLE);
+  const rootB = workspace(SAMPLE);
+  const home = dshHome();
+
+  // 先在 A 工作区写一条项目记忆
+  const tools = createTools({ workspace: rootA, dshHome: home });
+  await tool(tools, 'memory').execute({ action: 'write', scope: 'project', key: '甲', text: 'A 工作区的记忆' });
+
+  const variables = new Map();
+  const ctx = {
+    tools: { register: () => {} },
+    systemPrompt: { variable: (n, r) => variables.set(n, r), section: () => {} },
+  };
+  apply(ctx, { dshHome: home });
+  const resolve = variables.get(MEMORY_VARIABLE);
+
+  // 同一个插件实例，两个 agent（两个会话）→ 各读各的工作区
+  assert.match(resolve({ agent: { session: { header: { cwd: rootA } } } }), /A 工作区的记忆/);
+  assert.equal(resolve({ agent: { session: { header: { cwd: rootB } } } }), '', 'B 工作区不该看到 A 的记忆');
 });
 
 test('apply：变量 resolver 在记忆文件损坏时返回空串而不是抛错', () => {
   const root = workspace(SAMPLE);
   const home = dshHome();
+  const assembly = { agent: { session: { header: { cwd: root } } } };
 
   const variables = new Map();
   const ctx = {
-    agent: { session: { summary: { cwd: root } } },
     tools: { register: () => {} },
     systemPrompt: { variable: (n, r) => variables.set(n, r), section: () => {} },
   };
@@ -492,8 +732,8 @@ test('apply：变量 resolver 在记忆文件损坏时返回空串而不是抛�
   fs.mkdirSync(file, { recursive: true });
 
   // 按 DSH 契约，未解析的变量会让整个提示词组装失败，因此 resolver 必须吞掉异常返回空串
-  assert.doesNotThrow(() => variables.get(MEMORY_VARIABLE)());
-  assert.equal(variables.get(MEMORY_VARIABLE)(), '');
+  assert.doesNotThrow(() => variables.get(MEMORY_VARIABLE)(assembly));
+  assert.equal(variables.get(MEMORY_VARIABLE)(assembly), '');
 });
 
 test('apply：宿主缺少 tools/systemPrompt 服务时静默降级，不抛错', () => {
@@ -506,7 +746,6 @@ test('apply：injectMemory 为 false 时不注入提示词，但仍注册工具'
   const registered = [];
   const sections = [];
   const ctx = {
-    agent: { session: { summary: { cwd: os.tmpdir() } } },
     tools: { register: (t) => registered.push(t) },
     systemPrompt: { section: (s) => sections.push(s) },
   };
@@ -515,16 +754,16 @@ test('apply：injectMemory 为 false 时不注入提示词，但仍注册工具'
   assert.equal(sections.length, 0);
 });
 
-test('apply：使用 defineTool 包装（模拟 DSH 宿主）', () => {
+test('apply：注册出去的工具必须是「编译过参数表 + 带 render」的形状', () => {
   const registered = [];
-  const ctx = {
-    agent: { session: { summary: { cwd: os.tmpdir() } } },
-    tools: {
-      defineTool: (def) => ({ ...def, viaDefineTool: true }),
-      register: (t) => registered.push(t),
-    },
-  };
+  const ctx = { tools: { register: (t) => registered.push(t) } };
   apply(ctx, { dshHome: dshHome() });
+
   assert.equal(registered.length, 5);
-  assert.ok(registered.every((t) => t.viaDefineTool === true));
+  for (const t of registered) {
+    assert.equal(t.parameters.type, 'object', `${t.name} 的参数表没被编译`);
+    assert.equal(typeof t.parameters.properties, 'object');
+    assert.equal(typeof t.output.render, 'function', `${t.name} 缺 output.render`);
+    assert.deepEqual(t.output.render({}, 'x'), [{ type: 'text', text: 'x' }]);
+  }
 });

@@ -1,4 +1,4 @@
-# 设计蓝本：从 ArkSeek 到 dsh-memory
+# 设计蓝本：从 ArkSeek 到 dsh-memory-beta
 
 本文件记录这次移植的**判断依据**，而不是使用说明（使用说明见 [README.md](README.md)）。
 参考实现是同一作者的另一套系统 ArkSeek（Python，QQ 机器人，四层记忆 + 混合召回 + 可靠性兜底）。

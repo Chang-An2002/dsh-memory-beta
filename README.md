@@ -1,4 +1,4 @@
-# dsh-memory
+# dsh-memory-beta
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）加一层**长期记忆**与**带来源的知识库召回**。
 
@@ -45,7 +45,7 @@ DSH 原生的检索是 `glob` / `grep`：**精确匹配**。你想不起来某�
 
 桌面端读的是 `desktop` profile，而 `dsh plugin` 命令行**按设计拒绝**操作它。正确方式是在桌面客户端的会话里直接说：
 
-> 把 dsh-memory 装上
+> 把 dsh-memory-beta 装上
 
 它会调用内置的 `plugin_manager` 工具，用客户端自带的 pnpm 在当前 profile 里装好并写入 `dsh.profile.bundles`。
 
@@ -53,10 +53,10 @@ DSH 原生的检索是 `glob` / `grep`：**精确匹配**。你想不起来某�
 
 ```bash
 # 从 GitHub 安装
-dsh plugin --profile web add github:Chang-An2002/dsh-memory
+dsh plugin --profile web add github:Chang-An2002/dsh-memory-beta
 
 # 从本地目录安装（开发时用，改动立即生效）
-dsh plugin --profile web add link:D:\path\to\dsh-memory
+dsh plugin --profile web add link:D:\path\to\dsh-memory-beta
 ```
 
 安装后重启 `dsh web` 并刷新浏览器。
@@ -66,10 +66,10 @@ dsh plugin --profile web add link:D:\path\to\dsh-memory
 在 profile 目录（`~/.dsh/profiles/<profile>/`）里：
 
 ```bash
-pnpm add github:Chang-An2002/dsh-memory
+pnpm add github:Chang-An2002/dsh-memory-beta
 ```
 
-然后在该 profile 的 `package.json` 的 `dsh.profile.bundles` 数组里加上 `"dsh-memory"`。
+然后在该 profile 的 `package.json` 的 `dsh.profile.bundles` 数组里加上 `"dsh-memory-beta"`。
 
 ## 使用
 
@@ -77,9 +77,9 @@ pnpm add github:Chang-An2002/dsh-memory
 
 | 工具 | 什么时候用 |
 |---|---|
-| `kb_index` | **第一次使用前跑一次**。之后每次新增或大改文档后再跑。增量更新，重复跑很便宜 |
+| `kb_index` | 想让索引更新时手动跑一次。**不是必须的前置步骤**——`kb_search` 会自己检测过期并重建。增量更新，重复跑很便宜 |
 | `kb_search` | 答案应该来自你自己的资料时。返回带引用的片段，或明确告诉你"没找到" |
-| `kb_stats` | 想知道"它到底索引了什么文件"时。回答依据可以核对 |
+| `kb_stats` | 想知道"它到底索引了什么文件"、以及索引有没有过期时。**只报告、不改动索引**，所以回答依据可以原样核对 |
 | `memory` | 记下稳定成立的事：`action` 取 `read`/`write`/`forget`，`scope` 取 `user`/`project` |
 | `memory_search` | 记忆条数变多后按内容检索 |
 
@@ -100,18 +100,53 @@ pnpm add github:Chang-An2002/dsh-memory
 
 **注意最后这一句**：插件会明确指示模型不要用训练知识把这个空缺补上。因为此刻你要的是你资料的答案，不是通用知识。
 
+### 索引不会悄悄过期
+
+改了文档却忘了重新索引，检索到的就是旧内容——而且**它不会报错，是静默答错**。这是知识库类工具最危险的失败模式。
+
+所以每次 `kb_search` 之前会先做一次过期检测（实测：55 个文件的工作区约 0.5 ms，见下），发现变化就**先重建索引再检索**，并在结果里如实写明：
+
+```
+注意：工作区自上次索引后有变化（改动 1 个）——docs/deploy.md。
+已自动重新索引后再回答。
+
+检索：插件怎么安装
+...
+```
+
+检测分两级，为的是**既不漏也不误报**：
+
+1. 先比文件的修改时间（`mtime`）——绝大多数文件在这一步就排除了，不读内容；
+2. 只有时间变了的文件才重新读盘算内容指纹。指纹一致就判定为**没变**。
+
+第 2 步不能省。`git checkout`、切换分支、格式化保存、复制文件都会改 `mtime` 但内容没变；只看时间的话，这些操作全会被误报成"过期"，然后触发一次毫无必要的大规模重建。
+
+如果不想让插件自动碰索引，把它关掉：`config: { autoReindex: false }`。此时检索仍会提醒你索引过期，但不会自己动手。
+
+**`kb_stats` 也做同样的检测，但不重建。** 两个工具对"索引新不新鲜"必须给出一致结论——一个报"已索引 12 个文件"、另一个报"有 3 个文件变了"，用户就没法相信任何一个数字。但 `kb_stats` 的定位是"核对依据"的只读工具，偷偷改掉它正在报告的东西会让人没法信任这份报告，所以它只如实说明：
+
+```
+注意：工作区自上次索引后有变化（改动 1 个）——docs/deploy.md。
+下面报告的是索引里的旧数据。
+
+工作区：...
+```
+
+换句话说：**过期检测两边一致，重新索引只发生在检索路径上。**
+
 ### 配置
 
 写在 profile 的 `cordis.patch.yml` 里：
 
 ```yaml
-- id: dsh-memory
-  name: dsh-memory
+- id: dsh-memory-beta
+  name: dsh-memory-beta
   config:
     maxPassages: 6          # kb_search 默认返回的片段数
     injectMemory: true      # 是否把长期记忆注入系统提示词
     maxInjectedEntries: 40  # 注入的条数上限
     maxInjectedChars: 3000  # 注入的字符预算
+    autoReindex: true       # 检索前发现索引过期时，是否自动重建（关掉则只提醒）
 ```
 
 ## 数据存在哪
@@ -162,7 +197,8 @@ pnpm add github:Chang-An2002/dsh-memory
 ### 工程
 
 - **团队共享记忆尚未实现。** 设计上计划在工作区放 `.dsh-memory/project.md` 供提交进 git，插件发现即读取且**不自动写入**（把"可提交"与"只该自己看"从物理上分开）。目前这部分还没做，记忆只存在 `~/.dsh` 下。
-- **`kb_index` 是手动触发的**，没有文件监听。改了文档要记得重新索引，否则检索到的是旧内容。
+- **索引过期是"检索时检测"，不是"文件一变就重建"。** 没有文件监听：变化要等到下一次 `kb_search` 才会被发现（并自动重建）。所以单次检索的结果按**检索那一刻**的工作区算，这点是准的；但如果你在两次检索之间改了文档却没有再检索，插件不会主动知道。检测策略见上面「索引不会悄悄过期」。
+- **自动重建会改写索引文件**。它不动你的文档，索引本身也只是可重建的派生物；但索引默认放在 `~/.dsh` 下，一般不在同步盘里，所以通常不会带来额外同步流量。
 - **索引在内存里全量驻留**。语料很大时（十万级片段）启动与内存开销会明显上升。
 - **跨平台只在 Windows 上实测过**。代码里没有平台特定假设，但 Linux/macOS 未验证。
 - **`kb_search` 一次只处理一个查询。** 复合问题（"A 和 B 分别是什么关系"）目前靠模型自己拆成多次调用，插件内置的查询分解与多跳编排**没有移植**——参考实现那部分逻辑（`query_planner.py`、`wiki_router.py`）深度耦合于某个特定机器人的领域（Wiki 路由、群聊身份），直接搬过来只会带来负担。这是有意的删减，不是遗漏。
@@ -170,7 +206,7 @@ pnpm add github:Chang-An2002/dsh-memory
 ## 卸载
 
 ```bash
-dsh plugin --profile web remove dsh-memory
+dsh plugin --profile web remove dsh-memory-beta
 ```
 
 桌面端在插件页面里取消选择，或让 DSH 自己卸载。
@@ -184,8 +220,8 @@ rm -rf ~/.dsh/memory
 ## 开发
 
 ```bash
-git clone https://github.com/Chang-An2002/dsh-memory
-cd dsh-memory
+git clone https://github.com/Chang-An2002/dsh-memory-beta
+cd dsh-memory-beta
 node --test test/          # 全部测试
 ```
 
@@ -197,8 +233,10 @@ node --test test/          # 全部测试
 | `test/chunking.test.js` | 结构感知切分、标题路径、行号 |
 | `test/memory.test.js` | 路径与工作区键、记忆文件读写、与人工编辑共存 |
 | `test/evidence.test.js` | 充分性判定、预算裁剪、来源标注 |
-| `test/index.test.js` | 文件发现、增量索引、检索编排、引用可核对 |
-| `test/plugin.test.js` | 工具注册、记忆注入、失败隔离 |
+| `test/index.test.js` | 文件发现、增量索引、**过期检测**、检索编排、引用可核对 |
+| `test/plugin.test.js` | 工具注册、**宿主契约（`Config` schema / 参数编译 / 段落 order）**、自动重索引、记忆注入、失败隔离 |
+
+> 单元测试用的是**假桩宿主**，它测不出"宿主怎么读我们的导出"这类契约问题。改动 `Config`、`inject`、`output`、`parameters`、提示词段落或变量名时，务必也启动一次真实 DSH 验证——这个插件曾经在 62 项自检全绿的情况下**一次都没能激活**。
 
 架构与移植依据见 [DESIGN.md](DESIGN.md)。
 

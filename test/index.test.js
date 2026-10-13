@@ -10,7 +10,7 @@ import {
   walkWorkspace,
   readIndexableFile,
 } from '../lib/walk.js';
-import { WorkspaceIndex, buildIndex, INDEX_VERSION } from '../lib/workspace-index.js';
+import { WorkspaceIndex, buildIndex, checkStaleness, INDEX_VERSION } from '../lib/workspace-index.js';
 import { createSparseRetriever, search, searchWithEvidence } from '../lib/search.js';
 
 /** 建一个隔离的临时工作区。 */
@@ -239,6 +239,85 @@ test('buildIndex：识别新增与删除的文件', () => {
   assert.deepEqual(second.changes.removed, ['notes/misc.md']);
   assert.equal(second.index.documents['notes/misc.md'], undefined, '被删除文件的片段不应残留');
   assert.ok(!second.index.chunks.some((c) => c.docId === 'notes/misc.md'));
+});
+
+/* --------------------------------------------------------- 索引过期检测 */
+
+test('checkStaleness：内容改动被识别为 modified', () => {
+  const root = workspace(SAMPLE);
+  const { index } = buildIndex(root, { dshHome: dshHome() });
+  assert.deepEqual(checkStaleness(index, root), [], '刚建完索引不应有过期项');
+
+  fs.appendFileSync(path.join(root, 'docs/deploy.md'), '\n## 卸载\n\n删除 bundle 条目。\n', 'utf8');
+
+  const stale = checkStaleness(index, root);
+  assert.deepEqual(stale, [{ docId: 'docs/deploy.md', kind: 'modified' }]);
+});
+
+test('checkStaleness：只动了 mtime、内容没变时**不**报过期', () => {
+  // 这是这套设计的关键正确性：git checkout、格式化保存、复制文件都会改 mtime 但内容不变。
+  // 如果只比 mtime 就下结论，这些操作会被误报成"过期"，然后触发一次毫无必要的大规模重建。
+  const root = workspace(SAMPLE);
+  const { index } = buildIndex(root, { dshHome: dshHome() });
+
+  const target = path.join(root, 'docs/deploy.md');
+  const old = new Date('2020-01-01T00:00:00Z');
+  fs.utimesSync(target, old, old);
+
+  assert.deepEqual(checkStaleness(index, root), [], 'mtime 变了但指纹一致 → 不算过期');
+});
+
+test('checkStaleness：新增文件被识别为 added', () => {
+  const root = workspace(SAMPLE);
+  const { index } = buildIndex(root, { dshHome: dshHome() });
+
+  fs.writeFileSync(path.join(root, 'docs/added.md'), '# 新增\n\n内容。\n', 'utf8');
+
+  const stale = checkStaleness(index, root);
+  assert.deepEqual(stale, [{ docId: 'docs/added.md', kind: 'added' }]);
+});
+
+test('checkStaleness：删除文件被识别为 removed', () => {
+  const root = workspace(SAMPLE);
+  const { index } = buildIndex(root, { dshHome: dshHome() });
+
+  fs.rmSync(path.join(root, 'notes/misc.md'));
+
+  const stale = checkStaleness(index, root);
+  assert.deepEqual(stale, [{ docId: 'notes/misc.md', kind: 'removed' }]);
+});
+
+test('checkStaleness：一次报出多种变化，且临时目录之外的东西不受影响', () => {
+  const root = workspace(SAMPLE);
+  const { index } = buildIndex(root, { dshHome: dshHome() });
+
+  fs.appendFileSync(path.join(root, 'docs/architecture.md'), '\n补充一句。\n', 'utf8');
+  fs.writeFileSync(path.join(root, 'notes/new.md'), '# 新\n', 'utf8');
+  fs.rmSync(path.join(root, 'notes/misc.md'));
+
+  const stale = checkStaleness(index, root).sort((a, b) => (a.docId < b.docId ? -1 : 1));
+  assert.deepEqual(stale, [
+    { docId: 'docs/architecture.md', kind: 'modified' },
+    { docId: 'notes/misc.md', kind: 'removed' },
+    { docId: 'notes/new.md', kind: 'added' },
+  ]);
+});
+
+test('buildIndex：复用片段时会刷新 mtime，避免"时间变了"被反复快筛命中', () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const first = buildIndex(root, { dshHome: home });
+
+  const target = path.join(root, 'docs/deploy.md');
+  const old = new Date('2020-01-01T00:00:00Z');
+  fs.utimesSync(target, old, old);
+
+  // 第一遍：内容没变，但索引里的 mtime 是旧的 → 会被快筛命中，重读后确认没变
+  const second = buildIndex(root, { dshHome: home, previous: first.index });
+  assert.equal(second.changes.unchanged, 3);
+  // 关键：重建之后索引里的 mtime 已经跟上，下次连快筛都不会命中
+  assert.equal(second.index.documents['docs/deploy.md'].mtimeMs, fs.statSync(target).mtimeMs);
+  assert.deepEqual(checkStaleness(second.index, root), []);
 });
 
 /* --------------------------------------------------------------- 检索 */

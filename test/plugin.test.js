@@ -291,17 +291,20 @@ test('kb_search：未建索引时自动建立后再回答（而不是要求用�
   const tools = createTools({ workspace: root, dshHome: dshHome() });
   const out = await tool(tools, 'kb_search').execute({ query: '存储选型' });
 
-  assert.match(out, /已自动重新索引后再回答/, '必须说明它替用户重建了索引');
-  assert.match(out, /新增 \d+ 个/, '必须说清变动了什么');
+  // 没有索引时不说"自上次索引后有变化"（没有"上次"），直接报重建了什么
+  assert.doesNotMatch(out, /自上次索引后有变化/);
+  assert.match(out, /已自动重新索引（新增 \d+ 个）后再回答/, '必须说明它替用户重建了索引、并说清变动了什么');
   assert.doesNotMatch(out, /先调用 kb_index/, '不该再要求用户手动建索引');
 });
 
-test('kb_search：工作区里确实没有可索引内容时，仍然明确提示', async () => {
+test('kb_search：工作区里确实没有可索引内容时，指向"文档位置"而不是让人去建索引', async () => {
+  // 空工作区里叫用户去 kb_index 是误导 —— 那只会建出一个空索引，
+  // 真正的问题通常是"文档是不是放错地方了"或"扩展名不在白名单里"。
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-empty-ws-'));
   const tools = createTools({ workspace: root, dshHome: dshHome() });
   const out = await tool(tools, 'kb_search').execute({ query: '任意问题' });
   assert.match(out, /没有可索引的内容/);
-  assert.match(out, /kb_index/);
+  assert.doesNotMatch(out, /调用 kb_index/, '工作区为空时不该叫人建索引');
 });
 
 test('kb_search：索引过期时自动重建，并如实告知改动了什么', async () => {
@@ -407,6 +410,33 @@ test('kb_stats：未建索引与已建索引两种状态都有明确输出', asy
   assert.match(stats, /已索引：2 个文件/);
   assert.match(stats, /docs\/architecture\.md/);
   assert.match(stats, /文件清单/);
+});
+
+test('kb_stats：从未索引过时不说「自上次索引后有变化」（真机暴露的措辞 bug）', async () => {
+  // 场景来自真机：在一个没有索引的工作区里 kb_stats 会说
+  //   「工作区自上次索引后有变化（新增 N 个）…下面报告的是索引里的旧数据。还没有索引。」
+  // 「自上次索引后」+「还没有索引」是自相矛盾的——没有"上次"，也没有"旧数据"。
+  const root = workspace(SAMPLE);
+  const tools = createTools({ workspace: root, dshHome: dshHome() });
+
+  const out = await tool(tools, 'kb_stats').execute({});
+  assert.doesNotMatch(out, /自上次索引后有变化/, '没索引时不该说"自上次索引后"');
+  assert.doesNotMatch(out, /旧数据/, '没索引时没有"旧数据"可言');
+  assert.match(out, /还没有索引/);
+  assert.match(out, /\d+ 个文件/, '应告诉用户工作区里有多少可索引的文件');
+});
+
+test('kb_stats：真的过期时仍然说「旧数据」', async () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  await tool(tools, 'kb_index').execute({});
+
+  fs.appendFileSync(path.join(root, 'docs/deploy.md'), '\n补充。\n', 'utf8');
+
+  const out = await tool(tools, 'kb_stats').execute({});
+  assert.match(out, /自上次索引后有变化/, '有索引且过期时，警告措辞必须保留');
+  assert.match(out, /旧数据/);
 });
 
 test('kb_stats：索引过期时如实报告，但**不**擅自重建（只读工具）', async () => {

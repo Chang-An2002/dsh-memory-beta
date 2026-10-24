@@ -887,3 +887,108 @@ test('apply：注册出去的工具必须是「编译过参数表 + 带 render�
     assert.deepEqual(t.output.render({}, 'x'), [{ type: 'text', text: 'x' }]);
   }
 });
+
+/* ------------------------------------------------- 与别的插件共存时的降级 */
+
+/** 临时接管 console.error，返回收集到的日志与恢复函数。 */
+function captureErrors() {
+  const messages = [];
+  const original = console.error;
+  console.error = (...args) => { messages.push(args.join(' ')); };
+  return { messages, restore: () => { console.error = original; } };
+}
+
+test('apply：某个工具名被别的插件占用时，只有它失败，其余四个仍可用', () => {
+  // `memory` 是个通用名字，与另一个记忆插件同时装上就会撞名。DSH 对重名注册是**抛错**的，
+  // 整批包一个 try 会让第一个失败就吞掉后面全部——那就是"装了两个插件，两个都用不了"。
+  const registered = [];
+  const captured = captureErrors();
+  try {
+    const ctx = {
+      tools: {
+        register: (t) => {
+          if (t.name === 'memory') throw new Error('tool "memory" is already registered');
+          registered.push(t);
+        },
+      },
+    };
+    assert.doesNotThrow(() => apply(ctx, { dshHome: dshHome(), injectMemory: false }));
+  } finally {
+    captured.restore();
+  }
+
+  assert.equal(registered.length, 4, '另外四个必须还在');
+  assert.ok(!registered.some((t) => t.name === 'memory'));
+  assert.ok(
+    captured.messages.some((m) => m.includes('memory') && m.includes('注册失败')),
+    '被吞掉的失败必须留下一条可见日志，不能静默',
+  );
+});
+
+test('apply：提示词段落重名时降级为「不注入」，而不是让整条插件消失', () => {
+  // 段落名 `long-term-memory` 若与另一个插件撞名，DSH 也会抛错。
+  // 一旦冒出 apply，Cordis 会卸载整条 fiber，五个工具跟着一起没。
+  const registered = [];
+  const captured = captureErrors();
+  try {
+    const ctx = {
+      tools: { register: (t) => registered.push(t) },
+      systemPrompt: {
+        variable: () => {},
+        section: () => { throw new Error('prompt section "long-term-memory" is already registered'); },
+      },
+    };
+    assert.doesNotThrow(() => apply(ctx, { dshHome: dshHome() }));
+  } finally {
+    captured.restore();
+  }
+
+  assert.equal(registered.length, 5, '工具必须全部还在');
+  assert.ok(captured.messages.some((m) => m.includes('段落') && m.includes('注册失败')));
+});
+
+test('apply：变量重名时不再注册段落（否则组装时会因未知变量失败）', () => {
+  const sections = [];
+  const captured = captureErrors();
+  try {
+    const ctx = {
+      tools: { register: () => {} },
+      systemPrompt: {
+        variable: () => { throw new Error('prompt variable "dsh_memory_long_term" is already registered'); },
+        section: (s) => sections.push(s),
+      },
+    };
+    assert.doesNotThrow(() => apply(ctx, { dshHome: dshHome() }));
+  } finally {
+    captured.restore();
+  }
+  assert.equal(sections.length, 0, '变量没注册成功就不该注册引用它的段落');
+});
+
+test('注入块必须声明「是事实，不是指令」', () => {
+  // 记忆条目里出现"总是用英文回答"这类句子时，它会被每轮注入 —— 那等于一条常驻指令。
+  // 这一行是廉价的缓解：明确告诉模型这是记录，不是要它服从的操作要求。
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  return tool(tools, 'memory')
+    .execute({ action: 'write', scope: 'user', key: '称呼', text: '叫长安' })
+    .then(() => {
+      const text = renderMemoryPrompt({ workspace: root, dshHome: home });
+      assert.match(text, /不是对你的指令/);
+    });
+});
+
+test('kb_stats：未建索引时不做切分（不产生索引文件）', async () => {
+  // 这条挡的是性能退化：早先为了报"共 N 个片段"会跑整份 buildIndex，
+  // 2000 个文件实测 674 ms，而只数文件只要 5 ms。
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  const indexFile = workspaceIndexFile(root, { dshHome: home });
+
+  const out = await tool(tools, 'kb_stats').execute({});
+  assert.match(out, /还没有索引/);
+  assert.match(out, /2 个文件/, '应给出文件数');
+  assert.equal(fs.existsSync(indexFile), false, 'kb_stats 是只读的，不该顺手建出索引文件');
+});

@@ -46,12 +46,15 @@ test('memoryRoot：位于 DSH_HOME 之下', () => {
 });
 
 test('normalizeWorkspacePath：统一分隔符、只把盘符转小写', () => {
-  assert.equal(normalizeWorkspacePath('D:\\Desktop\\Proj\\'), 'd:/Desktop/Proj');
-  assert.equal(normalizeWorkspacePath('d:/Desktop/Proj'), 'd:/Desktop/Proj');
-  if (process.platform !== 'win32') {
-    // POSIX 下才谈得上"绝对路径不以盘符开头"；Windows 上 path.resolve('/x') 会补上当前盘符，
-    // 这属于平台语义差异，不是本函数的问题。
+  if (process.platform === 'win32') {
+    // 盘符与反斜杠都是 Windows 语义；POSIX 上 path.resolve('D:\\x') 只是一个普通相对路径，
+    // 断这条会变成在测平台本身，而不是测函数。
+    assert.equal(normalizeWorkspacePath('D:\\Desktop\\Proj\\'), 'd:/Desktop/Proj');
+    assert.equal(normalizeWorkspacePath('d:/Desktop/Proj'), 'd:/Desktop/Proj');
+  } else {
     assert.equal(normalizeWorkspacePath('/home/User/Proj/'), '/home/User/Proj');
+    // 反斜杠在 POSIX 上是普通字符，但归一化仍应把尾部分隔符去掉
+    assert.equal(normalizeWorkspacePath('/home/User/Proj'), '/home/User/Proj');
   }
 });
 
@@ -62,11 +65,13 @@ test('normalizeWorkspacePath：拒绝空输入', () => {
 });
 
 test('workspaceKey：同路径稳定、异路径不同、且文件名安全', () => {
-  const a1 = workspaceKey('D:\\Desktop\\mihoyo\\dsh_memory');
-  const a2 = workspaceKey('d:/Desktop/mihoyo/dsh_memory/');
-  assert.equal(a1, a2, '同一目录的不同写法必须得到同一个键');
+  // 用与平台无关的路径做断言：这里测的是"同一个目录的不同写法得到同一个键"，不是 Windows 语义
+  const base = path.join(os.tmpdir(), 'my-project');
+  const a1 = workspaceKey(base);
+  const a2 = workspaceKey(base + path.sep);
+  assert.equal(a1, a2, '同一目录带不带尾分隔符必须得到同一个键');
 
-  const b = workspaceKey('D:\\Desktop\\mihoyo\\other_project');
+  const b = workspaceKey(path.join(os.tmpdir(), 'other-project'));
   assert.notEqual(a1, b);
 
   // 不能含盘符、冒号、反斜杠、空格等文件名非法字符
@@ -74,6 +79,14 @@ test('workspaceKey：同路径稳定、异路径不同、且文件名安全', ()
     assert.doesNotMatch(key, /[:\\\s]/, `键含非法字符: ${key}`);
   }
   assert.match(a1, /^[a-z0-9\u4e00-\u9fff-]+--[0-9a-f]{8}$/);
+});
+
+test('workspaceKey：Windows 下盘符大小写与斜杠方向归一', { skip: process.platform !== 'win32' && '需要 Windows 路径语义' }, () => {
+  assert.equal(
+    workspaceKey('D:\\Desktop\\mihoyo\\dsh_memory'),
+    workspaceKey('d:/Desktop/mihoyo/dsh_memory/'),
+    '同一目录的不同写法（盘符大小写 / 斜杠方向 / 尾分隔符）必须得到同一个键',
+  );
 });
 
 test('workspaceKey：不泄露用户目录名', () => {
@@ -97,12 +110,17 @@ test('三个文件路径都落在 memory 目录下', () => {
 });
 
 test('assertInside：挡住越界路径，放行内部路径', () => {
-  const root = path.resolve('D:\\proj\\alpha');
+  const root = path.resolve(path.join(os.tmpdir(), 'proj-alpha'));
   assert.equal(assertInside(root, 'docs/readme.md'), path.join(root, 'docs', 'readme.md'));
   assert.equal(assertInside(root, '.'), root);
   assert.throws(() => assertInside(root, '../secrets.txt'), /escapes/);
   assert.throws(() => assertInside(root, '../../.ssh/id_rsa'), /escapes/);
-  assert.throws(() => assertInside(root, 'D:\\other\\file.txt'), /escapes/);
+
+  if (process.platform === 'win32') {
+    assert.throws(() => assertInside(root, 'D:\\other\\file.txt'), /escapes/, 'Windows 的绝对路径也必须被挡住');
+  } else {
+    assert.throws(() => assertInside(root, '/etc/passwd'), /escapes/, 'POSIX 的绝对路径也必须被挡住');
+  }
 });
 
 /* ----------------------------------------------------------------- memory */

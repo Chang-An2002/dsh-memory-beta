@@ -332,6 +332,12 @@ node scripts/check-pack.mjs # 校验 npm 打包内容（白名单少写一项时
 
 CI 在 ubuntu 与 windows 上跑 Node 20 / 24 两档（`.github/workflows/test.yml`）。
 
+> **`npm test` 故意不带路径**（`node --test`，不是 `node --test test/`）。
+> Node 20 会把目录参数当"要扫描的目录"，Node 24 则把它当"要加载的模块入口"，
+> 于是 `node --test test/` 在 Node 24 上报 `Cannot find module .../test`。
+> 不带参数时两版都用默认发现规则（`**/*.test.js`），行为一致。
+> 这个差异是 CI 抓到的——本地只在 Node 24 上逐文件跑，发现不了。
+
 > 单元测试用的是**假桩宿主**，它测不出"宿主怎么读我们的导出"这类契约问题。改动 `Config`、`inject`、`output`、`parameters`、提示词段落或变量名时，务必也启动一次真实 DSH 验证——这个插件曾经在 62 项自检全绿的情况下**一次都没能激活**。
 
 架构与移植依据见 [DESIGN.md](DESIGN.md)，逐模块的移植对照见 [MIGRATION.md](MIGRATION.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。

@@ -46,8 +46,8 @@
     }
   },
   "scripts": {
-    "test": "node --test test/",
-    "test:in-process": "node --experimental-test-isolation=none --test test/"
+    "test": "node --test",
+    "test:in-process": "node --experimental-test-isolation=none --test"
   },
   "license": "MIT"
 }

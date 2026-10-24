@@ -314,7 +314,8 @@ rm -rf ~/.dsh/memory
 ```bash
 git clone https://github.com/Chang-An2002/dsh-memory-beta
 cd dsh-memory-beta
-node --test test/          # 全部测试
+npm test                    # 187 项，零依赖，不需要 npm install
+node scripts/check-pack.mjs # 校验 npm 打包内容（白名单少写一项时不会报错，只会少文件）
 ```
 
 测试按层组织，每层可独立运行：
@@ -327,10 +328,13 @@ node --test test/          # 全部测试
 | `test/evidence.test.js` | 充分性判定、预算裁剪、来源标注 |
 | `test/index.test.js` | 文件发现、增量索引、**过期检测**、检索编排、引用可核对 |
 | `test/plugin.test.js` | 工具注册、**宿主契约（`Config` schema / 参数编译 / 段落 order）**、自动重索引、记忆注入、失败隔离 |
+| `test/synonyms.test.js` | 同义表的解析容错、扩展边界、缓存失效、融合权重 |
+
+CI 在 ubuntu 与 windows 上跑 Node 20 / 24 两档（`.github/workflows/test.yml`）。
 
 > 单元测试用的是**假桩宿主**，它测不出"宿主怎么读我们的导出"这类契约问题。改动 `Config`、`inject`、`output`、`parameters`、提示词段落或变量名时，务必也启动一次真实 DSH 验证——这个插件曾经在 62 项自检全绿的情况下**一次都没能激活**。
 
-架构与移植依据见 [DESIGN.md](DESIGN.md)。
+架构与移植依据见 [DESIGN.md](DESIGN.md)，逐模块的移植对照见 [MIGRATION.md](MIGRATION.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 这个插件的来路
 

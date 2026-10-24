@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-beta",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "分层记忆与混合召回知识库插件：把「记得住人、能召回可靠信息」的记忆系统接进 DeepSeek Harness，附带来源标注、置信度兜底与画像管理",
   "keywords": [
     "dsh",
@@ -13,6 +13,7 @@
     "rrf",
     "knowledge-base"
   ],
+  "author": "Chang-An2002 (https://github.com/Chang-An2002)",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -23,6 +24,9 @@
     "lib",
     "cordis.patch.yml",
     "README.md",
+    "DESIGN.md",
+    "MIGRATION.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {

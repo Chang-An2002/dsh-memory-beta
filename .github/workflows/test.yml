@@ -1,0 +1,39 @@
+# 在 ubuntu 与 windows 上跑全部测试。
+#
+# 两条值得说明的选择：
+# 1. 没有 `npm ci` —— 这个插件是零运行时依赖，测试不需要安装任何东西。
+#    克隆下来直接 `npm test` 就能跑，CI 里也一样。
+# 2. 跑两个 Node 大版本，因为 package.json 声明了 `engines: >=20`；
+#    只测最新版，那句声明就没人验证。
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['20.x', '24.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 运行测试
+        run: npm test
+
+      # 打包白名单错了不会让测试失败，只会让 npm 上少文件 —— 所以单独校验一次
+      - name: 校验打包内容
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '24.x'
+        run: node scripts/check-pack.mjs

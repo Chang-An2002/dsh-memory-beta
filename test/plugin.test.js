@@ -12,6 +12,9 @@ import {
   resolveWorkspace,
   createTools,
   renderMemoryPrompt,
+  rankMemoryEntries,
+  recentConversationQuery,
+  messageText,
   toRegistrableTools,
   compileParameterSchema,
   summarizeStale,
@@ -585,7 +588,9 @@ test('renderMemoryPrompt：注入项目与用户两段，并带使用说明', as
   assert.match(text, /与当前对话冲突时以用户当前说法为准/);
 });
 
-test('renderMemoryPrompt：超出条数预算时说明还有更多，而不是静默丢弃', async () => {
+test('renderMemoryPrompt：超预算时不静默丢弃，而是列出**未展开的键名**', async () => {
+  // 改动前的措辞是"另有 5 条未列出，可用 memory_search 查询"——模型不知道那 5 条是什么，
+  // 所以没有理由去查。现在必须把键名列出来，模型才知道"存在一条关于 X 的记忆"。
   const root = workspace(SAMPLE);
   const home = dshHome();
   const tools = createTools({ workspace: root, dshHome: home });
@@ -595,8 +600,93 @@ test('renderMemoryPrompt：超出条数预算时说明还有更多，而不是�
   }
 
   const text = renderMemoryPrompt({ workspace: root, dshHome: home, config: { maxInjectedEntries: 3 } });
-  assert.match(text, /另有 5 条未列出/);
+  assert.match(text, /另有 5 条未展开/);
   assert.match(text, /memory_search/);
+  // 三个展开 + 五个未展开，键名必须都在
+  for (const i of [0, 1, 2, 3, 4, 5, 6, 7]) {
+    assert.ok(text.includes(`k${i}`), `键名 k${i} 应当出现在注入文本里`);
+  }
+  // 未展开的那些不能带正文
+  assert.doesNotMatch(text, /第 7 条内容/);
+});
+
+test('renderMemoryPrompt：有查询时把相关条目排到前面（超预算才看得出差别）', async () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  const memory = tool(tools, 'memory');
+  const topics = ['部署偏好', '命名规范', '数据库选型', '缓存策略', '日志格式', '回滚流程'];
+  for (const [i, topic] of topics.entries()) {
+    await memory.execute({ action: 'write', key: topic, text: `关于${topic}的说明，第 ${i} 条。` });
+  }
+
+  const config = { maxInjectedEntries: 2 };
+  const plain = renderMemoryPrompt({ workspace: root, dshHome: home, config });
+  const ranked = renderMemoryPrompt({ workspace: root, dshHome: home, config, query: '数据库选型和缓存策略哪个优先' });
+
+  // 无查询：按记录顺序，前两条展开
+  assert.match(plain, /- `部署偏好`/);
+  assert.doesNotMatch(plain, /- `数据库选型` [^\n]*\n- `缓存策略`/, '无查询时不该把这两条排到最前');
+
+  // 有查询：命中的两条必须排到最前，并因此被展开
+  const rankedLines = ranked.split('\n');
+  assert.ok(rankedLines.some((line) => line.startsWith('- `数据库选型`')), '数据库选型应被展开');
+  assert.ok(rankedLines.some((line) => line.startsWith('- `缓存策略`')), '缓存策略应被展开');
+  assert.doesNotMatch(ranked, /- `部署偏好`/, '不相干的条目应被挤到未展开清单里');
+  assert.match(ranked, /未展开[\s\S]*部署偏好/, '被挤掉的条目要出现在键名清单里');
+});
+
+test('renderMemoryPrompt：没有查询时保持记录顺序，不做任何重排', async () => {
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  const memory = tool(tools, 'memory');
+  for (const key of ['甲', '乙', '丙']) {
+    await memory.execute({ action: 'write', key, text: `内容${key}` });
+  }
+  const text = renderMemoryPrompt({ workspace: root, dshHome: home });
+  assert.ok(text.indexOf('`甲`') < text.indexOf('`乙`'));
+  assert.ok(text.indexOf('`乙`') < text.indexOf('`丙`'));
+});
+
+test('rankMemoryEntries：查询为空或条目不足两条时原样返回', () => {
+  const entries = [{ key: 'a', text: '甲' }, { key: 'b', text: '乙' }];
+  assert.equal(rankMemoryEntries(entries, ''), entries);
+  assert.equal(rankMemoryEntries(entries, '   '), entries);
+  const single = [entries[0]];
+  assert.equal(rankMemoryEntries(single, '甲'), single, '只有一条时无从排序，原样返回');
+});
+
+test('messageText：兼容字符串与内容块两种消息形态', () => {
+  assert.equal(messageText({ content: '纯文本' }), '纯文本');
+  assert.equal(messageText({ content: [{ type: 'text', text: '块一' }, { type: 'text', text: '块二' }] }), '块一\n块二');
+  assert.equal(messageText({ content: [{ type: 'tool-call' }] }), '', '非文本块不该混进来');
+  assert.equal(messageText({}), '');
+  assert.equal(messageText(undefined), '');
+});
+
+test('recentConversationQuery：取最近几条消息的文本，取不到时返回空串', () => {
+  const withSession = (messages) => ({ session: { deriveMessages: () => messages } });
+
+  assert.equal(
+    recentConversationQuery(withSession([
+      { content: '第一轮问题' },
+      { content: '第一轮回答' },
+      { content: '第二轮问题' },
+    ])),
+    '第一轮回答\n第二轮问题',
+    '默认取最近两条',
+  );
+
+  assert.equal(recentConversationQuery(undefined), '', '没有 agent 时为空串');
+  assert.equal(recentConversationQuery({}), '', '没有 session 时为空串');
+  assert.equal(recentConversationQuery(withSession([])), '', '空对话时为空串');
+  assert.equal(
+    recentConversationQuery({ session: { deriveMessages: () => { throw new Error('boom'); } } }),
+    '',
+    'deriveMessages 抛错时必须吞掉',
+  );
+  assert.ok(recentConversationQuery(withSession([{ content: '长'.repeat(5000) }])).length <= 600, '必须截断');
 });
 
 test('renderMemoryPrompt：字符预算生效', async () => {

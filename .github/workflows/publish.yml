@@ -1,0 +1,57 @@
+# 打 tag 自动发布到 npm。
+#
+# 用的是 npm 的 trusted publishing（OIDC）：没有长期 token、不需要 OTP，
+# 由 GitHub Actions 的身份直接换取发布权限，并附带 provenance 签名。
+#
+# 前提（只需配一次，在 npm 包页上做）：
+#   Settings → Trusted Publisher → GitHub Actions
+#     Organization / User : Chang-An2002
+#     Repository          : dsh-memory-beta
+#     Workflow filename   : publish.yml
+#     Environment         : 留空
+#   并勾选 **Allow npm publish**（不勾只会走暂存，需要人工去 npm 上点批准）。
+#
+# ⚠️ 第一个版本发不出去：trusted publisher 要在"包页面"上配置，而包还不存在时没有那个页面。
+#    所以 1.0.0 请先手动 `npm publish` 建出包，再来配这个连接；之后都用 tag。
+#
+# 发版：git tag v1.0.1 && git push --tags
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write # OIDC：trusted publishing 与 provenance 都需要它
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      # 两道闸门：测试不过、打包内容不对，都不发。
+      # 手动发布时人可能忘了跑，这里不会。
+      - name: 运行测试
+        run: npm test
+
+      - name: 校验打包内容
+        run: node scripts/check-pack.mjs
+
+      - name: 校验 tag 与 package.json 版本一致
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "tag 是 $tag，但 package.json 的 version 是 $version" >&2
+            exit 1
+          fi
+
+      - name: 发布到 npm
+        run: npm publish --provenance --access public

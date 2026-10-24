@@ -527,6 +527,26 @@ test('memory 工具：scope 隔离（project 与 user 互不影响）', async ()
   assert.doesNotMatch(user, /TypeScript/);
 });
 
+test('memory 工具：不传 scope 时 read 两个作用域（否则会像写入失败）', async () => {
+  // 这是真机跑出来的陷阱：先 write scope=user、再 read（不传 scope），旧实现默认只读 project，
+  // 于是返回"project 记忆目前是空的"——看起来像写没成功，而 memory_search 的默认却是 both。
+  const root = workspace(SAMPLE);
+  const home = dshHome();
+  const tools = createTools({ workspace: root, dshHome: home });
+  const memory = tool(tools, 'memory');
+
+  await memory.execute({ action: 'write', scope: 'user', key: '称呼', text: '叫长安' });
+
+  const both = await memory.execute({ action: 'read' });
+  assert.match(both, /叫长安/, 'user 作用域的条目必须出现在不传 scope 的 read 里');
+  assert.match(both, /project/, '两个作用域都要列出来');
+  assert.match(both, /user/);
+
+  // 显式传 scope 时仍然只读那一个
+  const onlyProject = await memory.execute({ action: 'read', scope: 'project' });
+  assert.doesNotMatch(onlyProject, /长安/);
+});
+
 test('memory 工具：forget 缺少 key 与 query 时拒绝执行（防误删）', async () => {
   const root = workspace(SAMPLE);
   const home = dshHome();

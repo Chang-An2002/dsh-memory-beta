@@ -341,6 +341,7 @@ CI 在 ubuntu 与 windows 上跑 Node 20 / 24 两档（`.github/workflows/test.y
 > 这个差异是 CI 抓到的——本地只在 Node 24 上逐文件跑，发现不了。
 
 > 单元测试用的是**假桩宿主**，它测不出"宿主怎么读我们的导出"这类契约问题。改动 `Config`、`inject`、`output`、`parameters`、提示词段落或变量名时，务必也启动一次真实 DSH 验证——这个插件曾经在 62 项自检全绿的情况下**一次都没能激活**。
+> 具体步骤、预期输出与判据见 [VERIFICATION.md](VERIFICATION.md)，配套脚本在 `scripts/real-kernel/`。CI 里的四个组合只证明测试跨平台，不替代真机验证。
 
 架构与移植依据见 [DESIGN.md](DESIGN.md)，逐模块的移植对照见 [MIGRATION.md](MIGRATION.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 

@@ -53,6 +53,11 @@ jobs:
             exit 1
           fi
 
+      # Trusted publishing（OIDC）需要 npm 11.5.1 或更新。
+      # setup-node 自带的 npm 版本随 Node 走，不保证够新，所以显式升一次。
+      - name: 升级 npm
+        run: npm install --global npm@latest
+
       # 幂等：版本已经在 npm 上就跳过发布。
       # 没有这一步时，给一个已发布的版本补打 tag（很常见）会让整条流水线变红。
       - name: 该版本是否已发布

@@ -74,3 +74,21 @@ jobs:
       - name: 发布到 npm
         if: steps.exists.outputs.skip != 'true'
         run: npm publish --provenance --access public
+
+      # `npm publish` 返回 0 不等于"别人能装到"：包如果设置了发布需人工批准，
+      # 版本会进暂存队列，命令照样成功退出，而注册表里查不到。
+      # 没有这一步时，流水线会绿着但什么都没发出去——实际发生过一次。
+      - name: 确认版本真的可以安装
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          for _ in $(seq 1 12); do
+            if npm view "dsh-memory-beta@${version}" version >/dev/null 2>&1; then
+              echo "dsh-memory-beta@${version} 已可安装。"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::发布命令成功了，但 dsh-memory-beta@${version} 在注册表里查不到。"
+          echo "常见原因：包设置了发布需人工批准，版本进了暂存队列，需要去 npm 包页面确认。"
+          exit 1

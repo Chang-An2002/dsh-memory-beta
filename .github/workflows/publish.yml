@@ -53,5 +53,19 @@ jobs:
             exit 1
           fi
 
+      # 幂等：版本已经在 npm 上就跳过发布。
+      # 没有这一步时，给一个已发布的版本补打 tag（很常见）会让整条流水线变红。
+      - name: 该版本是否已发布
+        id: exists
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "dsh-memory-beta@${version}" version >/dev/null 2>&1; then
+            echo "dsh-memory-beta@${version} 已在 npm 上，跳过发布。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 发布到 npm
+        if: steps.exists.outputs.skip != 'true'
         run: npm publish --provenance --access public

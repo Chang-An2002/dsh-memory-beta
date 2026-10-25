@@ -71,9 +71,21 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # 预发布版本（1.1.0-beta.1 这类）不要顶掉 latest。
+      # `npm publish` 不带 --tag 时总把新版本标成 latest，于是 `npm i pkg` 会装到 beta，
+      # 而发布者往往没意识到。含 `-` 的版本一律发到 dist-tag `next`。
+      - name: 决定 dist-tag
+        id: disttag
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          case "$version" in
+            *-*) echo "tag=next" >> "$GITHUB_OUTPUT"; echo "$version 是预发布版本，发到 dist-tag next（不顶掉 latest）。" ;;
+            *)   echo "tag=latest" >> "$GITHUB_OUTPUT"; echo "$version 是正式版本，发到 dist-tag latest。" ;;
+          esac
+
       - name: 发布到 npm
         if: steps.exists.outputs.skip != 'true'
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag ${{ steps.disttag.outputs.tag }}
 
       # `npm publish` 返回 0 不等于"别人能装到"，两种常见情况：
       #   a) 注册表传播延迟 —— 发布成功后几十秒内 `npm view` 仍可能 404；

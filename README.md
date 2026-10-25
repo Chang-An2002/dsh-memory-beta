@@ -1,7 +1,7 @@
 # dsh-memory-beta
 
 [![npm](https://img.shields.io/npm/v/dsh-memory-beta)](https://www.npmjs.com/package/dsh-memory-beta)
-[![tests](https://github.com/Chang-An2002/dsh-memory-beta/actions/workflows/test.yml/badge.svg)](https://github.com/Chang-An2002/dsh-memory-beta/actions/workflows/test.yml)
+[![tests](https://img.shields.io/github/actions/workflow/status/Chang-An2002/dsh-memory-beta/test.yml?label=tests)](https://github.com/Chang-An2002/dsh-memory-beta/actions/workflows/test.yml)
 [![dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen)](package.json)
 [![license](https://img.shields.io/npm/l/dsh-memory-beta)](LICENSE)
 
